@@ -8,15 +8,21 @@ import glob
 # Configuration de la page
 st.set_page_config(page_title="Dashboard Pilotage Randstad", layout="wide")
 
-st.title("📊 Dashboard de Pilotage - Randstad / Merck")
+# --- EN-TÊTE AVEC KPI PLANNING ---
+col_title, col_plan = st.columns([3, 1])
+with col_title:
+    st.title("📊 Dashboard de Pilotage - Randstad / Merck")
 
-# --- OUTIL DE DEBUG (Visible seulement si besoin) ---
-with st.expander("🛠️ Zone Admin & Debug (Cliquer pour voir les fichiers)"):
-    st.write("Dossier actuel :", os.getcwd())
-    st.write("Fichiers détectés :", os.listdir('.'))
+with col_plan:
+    # Zone Planning modifiable
+    st.markdown("### 👥 Planning / Effectifs")
+    # On met 133 par défaut, mais tu peux le changer à la volée
+    effectif = st.number_input("Intérimaires en poste (Semaine en cours)", value=133, step=1)
+    st.caption("Donnée temps réel")
 
-# --- FONCTION DE NETTOYAGE ---
+# --- FONCTION DE NETTOYAGE RENFORCÉE ---
 def clean_and_scale_data(df):
+    # 1. CONVERSION TEXTE -> NOMBRE
     for col in df.columns:
         if df[col].dtype == 'object':
             try:
@@ -27,75 +33,72 @@ def clean_and_scale_data(df):
             except Exception:
                 pass
 
+    # 2. MISE A L'ECHELLE DES POURCENTAGES (0.88 -> 88.0)
     for col in df.columns:
         col_lower = col.lower()
-        if any(x in col_lower for x in ['taux', '%', 'atteinte', 'validation', 'rendement']):
+        if any(x in col_lower for x in ['taux', '%', 'atteinte', 'validation', 'rendement', 'impact']):
             if pd.api.types.is_numeric_dtype(df[col]):
                 max_val = df[col].max()
                 if pd.notna(max_val) and -1.5 <= max_val <= 1.5 and max_val != 0:
                     df[col] = df[col] * 100
     return df
 
-# --- LOGIQUE DE CHARGEMENT ---
-# 1. On essaie de trouver un fichier Excel automatiquement
-excel_files = glob.glob("*.xlsx")
-data = {}
-file_source = "Aucun"
+# --- CHARGEMENT INTELLIGENT ---
+@st.cache_data
+def load_data():
+    excel_files = glob.glob("*.xlsx")
+    if not excel_files:
+        return None, None
 
-# Si on trouve un fichier sur le serveur, on le charge
-if len(excel_files) > 0:
-    file_path = excel_files[0]
-    file_source = f"Automatique ({file_path})"
+    found_file = excel_files[0]
+    data = {}
     try:
-        xls = pd.ExcelFile(file_path)
-    except Exception as e:
-        st.error(f"Erreur lecture auto : {e}")
-        xls = None
-else:
-    xls = None
-
-# 2. Si pas de fichier auto (ou erreur), on affiche l'upload manuel
-if xls is None:
-    st.warning("⚠️ Aucun fichier Excel trouvé automatiquement sur le serveur.")
-    uploaded_file = st.file_uploader("📂 Chargez votre fichier Excel manuellement (Secours)", type="xlsx")
-    if uploaded_file:
-        file_source = "Manuel (Upload)"
-        xls = pd.ExcelFile(uploaded_file)
-    else:
-        st.stop() # On arrête tout ici si on n'a rien
-
-# 3. Traitement du fichier (qu'il vienne du serveur ou de l'upload)
-if xls:
-    try:
+        xls = pd.ExcelFile(found_file)
         all_sheets = xls.sheet_names
+        
+        # Mapping complet avec les nouveaux onglets Absentéisme
         expected = {
             "YTD": "CONSOLIDATION_YTD",
             "RECRUT": "Recrutement_Mensuel",
             "ABS": "Absentéisme_Global_Mois",
+            "ABS_MOTIF": "Absentéisme_Par_Motif",   # NOUVEAU
+            "ABS_SERVICE": "Absentéisme_Par_Service", # NOUVEAU
             "SOURCE": "KPI_Sourcing_Rendement",
             "PLAN": "Suivi_Plan_Action"
         }
         
         for key, sheet_name in expected.items():
             if sheet_name in all_sheets:
-                df_raw = pd.read_excel(xls, sheet_name=sheet_name)
+                df_raw = pd.read_excel(found_file, sheet_name=sheet_name)
                 data[key] = clean_and_scale_data(df_raw)
-        
-        st.toast(f"Source des données : {file_source}", icon="✅")
+        return data, found_file
         
     except Exception as e:
-        st.error(f"Erreur critique lors du traitement : {e}")
-        st.stop()
+        st.error(f"Erreur de lecture : {e}")
+        return None, found_file
 
-st.markdown("---")
+# Exécution du chargement
+data, filename = load_data()
+
+if data is None:
+    st.error("❌ Aucun fichier Excel (.xlsx) trouvé sur le serveur.")
+    st.info("Veuillez uploader votre fichier de données (ex: data.xlsx) sur GitHub.")
+    st.stop()
+else:
+    st.markdown("---")
 
 # --- DASHBOARD ---
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["📈 Vue Globale", "🤝 Recrutement", "🏥 Absentéisme", "🔍 Sourcing", "✅ Plan d'Action"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📈 Vue Globale", "🤝 Recrutement", "🏥 Absentéisme (Détails)", "🔍 Sourcing", "✅ Plan d'Action"])
 
 # --- 1. VUE GLOBALE (YTD) ---
 with tab1:
     st.header("Performance Annuelle (Year-To-Date)")
+    
+    # On affiche aussi le planning ici pour la vue d'ensemble
+    st.metric(label="📍 Effectif Intérimaire Actuel", value=effectif, delta="En poste cette semaine")
+    st.markdown("---")
+    
     if "YTD" in data:
         df_ytd = data["YTD"]
         col_val = 'Valeur YTD'
@@ -138,9 +141,11 @@ with tab2:
                         df_show[col] = df_show[col].apply(lambda x: f"{x:.2f}%")
                 st.dataframe(df_show)
 
-# --- 3. ABSENTÉISME ---
+# --- 3. ABSENTÉISME (NOUVEAUX GRAPHIQUES) ---
 with tab3:
-    st.header("Absentéisme")
+    st.header("Analyse de l'Absentéisme")
+    
+    # 1. KPI GLOBAL (Graphique existant)
     if "ABS" in data:
         df_abs = data["ABS"]
         if 'Mois' in df_abs.columns:
@@ -149,23 +154,58 @@ with tab3:
                  df_abs['Période'] = df_abs['Mois'].astype(str) + "/" + df_abs['Année'].astype(str)
             else:
                  df_abs['Période'] = df_abs['Mois'].astype(str)
-
-        fig_abs = px.area(df_abs, x='Période', y='Taux Absentéisme', 
-                          title="Taux Absentéisme Global", markers=True, color_discrete_sequence=['#FF5733'])
+        
+        st.subheader("Taux Global")
+        fig_abs = px.area(df_abs, x='Période', y='Taux Absentéisme', markers=True, color_discrete_sequence=['#FF5733'])
         fig_abs.update_layout(yaxis_ticksuffix="%")
         st.plotly_chart(fig_abs, use_container_width=True)
-        
-        c1, c2 = st.columns(2)
-        if 'Taux Absentéisme' in df_abs.columns:
-             moy = df_abs['Taux Absentéisme'].mean()
-             c1.metric("Moyenne Annuelle", f"{moy:.2f}%")
-        
-        df_show_abs = df_abs.copy()
-        if 'Taux Absentéisme' in df_show_abs.columns:
-             df_show_abs['Taux Absentéisme'] = df_show_abs['Taux Absentéisme'].apply(lambda x: f"{x:.2f}%" if isinstance(x, (int,float)) else x)
-        c1.dataframe(df_show_abs)
+    
+    st.markdown("---")
 
-# --- 4. SOURCING (SURBRILLANCE ORANGE + FOCUS TC) ---
+    # 2. DETAILS PAR MOTIF ET SERVICE (NOUVEAU)
+    c_motif, c_service = st.columns(2)
+    
+    with c_motif:
+        st.subheader("Par Motif (Impact %)")
+        if "ABS_MOTIF" in data:
+            df_motif = data["ABS_MOTIF"]
+            # Création Période
+            if 'Année' in df_motif.columns and 'Mois' in df_motif.columns:
+                df_motif = df_motif.sort_values(['Année', 'Mois'])
+                df_motif['Période'] = df_motif['Mois'].astype(str) + "/" + df_motif['Année'].astype(str)
+            
+            # Graphique Empilé
+            if 'Impact Motif (%)' in df_motif.columns:
+                fig_mot = px.bar(df_motif, x='Période', y='Impact Motif (%)', color='Motif',
+                                 title="Répartition des Motifs", barmode='stack')
+                fig_mot.update_layout(yaxis_ticksuffix="%")
+                st.plotly_chart(fig_mot, use_container_width=True)
+            else:
+                st.warning("Données Motif incomplètes")
+        else:
+            st.info("Onglet 'Absentéisme_Par_Motif' manquant.")
+
+    with c_service:
+        st.subheader("Par Service (Taux %)")
+        if "ABS_SERVICE" in data:
+            df_service = data["ABS_SERVICE"]
+            # Création Période
+            if 'Année' in df_service.columns and 'Mois' in df_service.columns:
+                df_service = df_service.sort_values(['Année', 'Mois'])
+                df_service['Période'] = df_service['Mois'].astype(str) + "/" + df_service['Année'].astype(str)
+            
+            # Graphique Groupé
+            if 'Taux Absentéisme' in df_service.columns:
+                fig_serv = px.bar(df_service, x='Période', y='Taux Absentéisme', color='Service',
+                                  title="Comparatif Services", barmode='group')
+                fig_serv.update_layout(yaxis_ticksuffix="%")
+                st.plotly_chart(fig_serv, use_container_width=True)
+            else:
+                st.warning("Données Service incomplètes")
+        else:
+            st.info("Onglet 'Absentéisme_Par_Service' manquant.")
+
+# --- 4. SOURCING ---
 with tab4:
     st.header("Performance Sourcing")
     if "SOURCE" in data:
@@ -173,7 +213,6 @@ with tab4:
         if 'Source' in df_src.columns:
             df_agg = df_src.groupby('Source', as_index=False)[['1. Appels Reçus', '2. Validés (Sél.)', '3. Intégrés (Délégués)']].sum()
             
-            # FOCUS TC
             st.subheader("🔥 Focus : Efficience Talent Center")
             mask_tc = df_agg['Source'].astype(str).str.upper().str.contains("TALENT CENTER")
             df_tc = df_agg[mask_tc]
@@ -192,8 +231,7 @@ with tab4:
             
             st.markdown("---")
 
-            # TOP 5 COLORÉ
-            st.subheader("🏆 Top 5 des Meilleures Sources (Intégration)")
+            st.subheader("🏆 Top 5 des Meilleures Sources")
             df_top5 = df_agg.sort_values(by=['3. Intégrés (Délégués)', '1. Appels Reçus'], ascending=[False, False]).head(5)
             
             def categorize_source(source_name):
@@ -206,20 +244,11 @@ with tab4:
                 x='Source',
                 y='3. Intégrés (Délégués)',
                 color='Catégorie',
-                title="Nombre d'Intégrations par Source",
                 text='3. Intégrés (Délégués)',
-                color_discrete_map={
-                    "Talent Center": "#FF4500", # Orange
-                    "Autres Sources": "#1f77b4" # Bleu
-                }
+                color_discrete_map={"Talent Center": "#FF4500", "Autres Sources": "#1f77b4"}
             )
             fig_best.update_traces(textposition='outside')
             st.plotly_chart(fig_best, use_container_width=True)
-            
-            with st.expander("Voir le tableau complet"):
-                df_disp_src = df_agg.copy()
-                df_disp_src['Rendement (%)'] = (df_disp_src['3. Intégrés (Délégués)'] / df_disp_src['1. Appels Reçus'] * 100).fillna(0).map('{:.2f}%'.format)
-                st.dataframe(df_disp_src)
 
 # --- 5. PLAN D'ACTION ---
 with tab5:
