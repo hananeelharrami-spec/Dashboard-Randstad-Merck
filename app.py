@@ -3,16 +3,16 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import os
+import glob # Permet de chercher des fichiers
 
 # Configuration de la page
 st.set_page_config(page_title="Dashboard Pilotage Randstad", layout="wide")
 
 st.title("📊 Dashboard de Pilotage - Randstad / Merck")
-st.markdown("---")
 
-# --- CONFIGURATION DU FICHIER SOURCE ---
-# C'est ici que ça se joue : on définit le nom du fichier fixe
-DATA_FILE = "data.xlsx"
+# --- OUTIL DE DIAGNOSTIC (S'affiche si problème) ---
+# Cela t'aidera à voir quels fichiers sont réellement sur le serveur
+files_present = os.listdir('.')
 
 # --- FONCTION DE NETTOYAGE RENFORCÉE ---
 def clean_and_scale_data(df):
@@ -37,15 +37,21 @@ def clean_and_scale_data(df):
                     df[col] = df[col] * 100
     return df
 
-# --- CHARGEMENT DES DONNÉES AUTOMATIQUE ---
-@st.cache_data # Garde les données en mémoire pour que ce soit ultra rapide
+# --- CHARGEMENT INTELLIGENT ---
+@st.cache_data
 def load_data():
-    if not os.path.exists(DATA_FILE):
-        return None
+    # 1. On cherche n'importe quel fichier .xlsx dans le dossier actuel
+    excel_files = glob.glob("*.xlsx")
+    
+    if not excel_files:
+        return None, None
+
+    # On prend le premier trouvé (ex: "Dashboard Merck.xlsx")
+    found_file = excel_files[0]
     
     data = {}
     try:
-        xls = pd.ExcelFile(DATA_FILE)
+        xls = pd.ExcelFile(found_file)
         all_sheets = xls.sheet_names
         
         expected = {
@@ -58,22 +64,29 @@ def load_data():
         
         for key, sheet_name in expected.items():
             if sheet_name in all_sheets:
-                df_raw = pd.read_excel(DATA_FILE, sheet_name=sheet_name)
+                df_raw = pd.read_excel(found_file, sheet_name=sheet_name)
                 data[key] = clean_and_scale_data(df_raw)
-        return data
+        return data, found_file
+        
     except Exception as e:
-        st.error(f"Erreur de lecture du fichier : {e}")
-        return None
+        st.error(f"Erreur de lecture : {e}")
+        return None, found_file
 
 # Exécution du chargement
-data = load_data()
+data, filename = load_data()
 
+# --- GESTION DES ERREURS ---
 if data is None:
-    st.error(f"⚠️ Le fichier source '{DATA_FILE}' est introuvable sur le serveur.")
-    st.info("Administrateur : Veuillez uploader 'data.xlsx' sur GitHub.")
-    st.stop() # Arrête l'app si pas de fichier
+    st.error("❌ Aucun fichier Excel (.xlsx) trouvé sur le serveur.")
+    st.warning(f"Fichiers présents dans le dossier : {files_present}")
+    st.info("Action : Assurez-vous d'avoir uploadé votre fichier Excel sur GitHub (à côté de app.py).")
+    st.stop()
+else:
+    # Petit message discret pour confirmer quel fichier est utilisé
+    st.toast(f"Données chargées depuis : {filename}", icon="✅")
+    st.markdown("---")
 
-# --- DASHBOARD (Code inchangé pour l'affichage) ---
+# --- DASHBOARD ---
 
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["📈 Vue Globale", "🤝 Recrutement", "🏥 Absentéisme", "🔍 Sourcing", "✅ Plan d'Action"])
 
