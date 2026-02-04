@@ -10,9 +10,13 @@ st.set_page_config(page_title="Dashboard Pilotage Randstad", layout="wide")
 
 st.title("📊 Dashboard de Pilotage - Randstad / Merck")
 
-# --- FONCTION DE NETTOYAGE RENFORCÉE ---
+# --- OUTIL DE DEBUG (Visible seulement si besoin) ---
+with st.expander("🛠️ Zone Admin & Debug (Cliquer pour voir les fichiers)"):
+    st.write("Dossier actuel :", os.getcwd())
+    st.write("Fichiers détectés :", os.listdir('.'))
+
+# --- FONCTION DE NETTOYAGE ---
 def clean_and_scale_data(df):
-    # 1. CONVERSION TEXTE -> NOMBRE
     for col in df.columns:
         if df[col].dtype == 'object':
             try:
@@ -23,7 +27,6 @@ def clean_and_scale_data(df):
             except Exception:
                 pass
 
-    # 2. MISE A L'ECHELLE DES POURCENTAGES (0.88 -> 88.0)
     for col in df.columns:
         col_lower = col.lower()
         if any(x in col_lower for x in ['taux', '%', 'atteinte', 'validation', 'rendement']):
@@ -33,19 +36,38 @@ def clean_and_scale_data(df):
                     df[col] = df[col] * 100
     return df
 
-# --- CHARGEMENT INTELLIGENT ---
-@st.cache_data
-def load_data():
-    excel_files = glob.glob("*.xlsx")
-    if not excel_files:
-        return None, None
+# --- LOGIQUE DE CHARGEMENT ---
+# 1. On essaie de trouver un fichier Excel automatiquement
+excel_files = glob.glob("*.xlsx")
+data = {}
+file_source = "Aucun"
 
-    found_file = excel_files[0]
-    data = {}
+# Si on trouve un fichier sur le serveur, on le charge
+if len(excel_files) > 0:
+    file_path = excel_files[0]
+    file_source = f"Automatique ({file_path})"
     try:
-        xls = pd.ExcelFile(found_file)
+        xls = pd.ExcelFile(file_path)
+    except Exception as e:
+        st.error(f"Erreur lecture auto : {e}")
+        xls = None
+else:
+    xls = None
+
+# 2. Si pas de fichier auto (ou erreur), on affiche l'upload manuel
+if xls is None:
+    st.warning("⚠️ Aucun fichier Excel trouvé automatiquement sur le serveur.")
+    uploaded_file = st.file_uploader("📂 Chargez votre fichier Excel manuellement (Secours)", type="xlsx")
+    if uploaded_file:
+        file_source = "Manuel (Upload)"
+        xls = pd.ExcelFile(uploaded_file)
+    else:
+        st.stop() # On arrête tout ici si on n'a rien
+
+# 3. Traitement du fichier (qu'il vienne du serveur ou de l'upload)
+if xls:
+    try:
         all_sheets = xls.sheet_names
-        
         expected = {
             "YTD": "CONSOLIDATION_YTD",
             "RECRUT": "Recrutement_Mensuel",
@@ -56,28 +78,20 @@ def load_data():
         
         for key, sheet_name in expected.items():
             if sheet_name in all_sheets:
-                df_raw = pd.read_excel(found_file, sheet_name=sheet_name)
+                df_raw = pd.read_excel(xls, sheet_name=sheet_name)
                 data[key] = clean_and_scale_data(df_raw)
-        return data, found_file
+        
+        st.toast(f"Source des données : {file_source}", icon="✅")
         
     except Exception as e:
-        st.error(f"Erreur de lecture : {e}")
-        return None, found_file
+        st.error(f"Erreur critique lors du traitement : {e}")
+        st.stop()
 
-# Exécution du chargement
-data, filename = load_data()
-
-if data is None:
-    st.error("❌ Aucun fichier Excel (.xlsx) trouvé sur le serveur.")
-    st.info("Veuillez uploader votre fichier de données (ex: data.xlsx) sur GitHub.")
-    st.stop()
-else:
-    # st.toast(f"Données chargées depuis : {filename}", icon="✅") # Optionnel
-    st.markdown("---")
+st.markdown("---")
 
 # --- DASHBOARD ---
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["📈 Vue Globale", "🤝 Recrutement", "🏥 Absentéisme", "🔍 Sourcing (Focus TC)", "✅ Plan d'Action"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📈 Vue Globale", "🤝 Recrutement", "🏥 Absentéisme", "🔍 Sourcing", "✅ Plan d'Action"])
 
 # --- 1. VUE GLOBALE (YTD) ---
 with tab1:
@@ -151,19 +165,16 @@ with tab3:
              df_show_abs['Taux Absentéisme'] = df_show_abs['Taux Absentéisme'].apply(lambda x: f"{x:.2f}%" if isinstance(x, (int,float)) else x)
         c1.dataframe(df_show_abs)
 
-# --- 4. SOURCING (SURBRILLANCE) ---
+# --- 4. SOURCING (SURBRILLANCE ORANGE + FOCUS TC) ---
 with tab4:
     st.header("Performance Sourcing")
     if "SOURCE" in data:
         df_src = data["SOURCE"]
         if 'Source' in df_src.columns:
-            # 1. Aggrégation
             df_agg = df_src.groupby('Source', as_index=False)[['1. Appels Reçus', '2. Validés (Sél.)', '3. Intégrés (Délégués)']].sum()
             
-            # 2. FOCUS TALENT CENTER (Logique insensible à la casse et aux espaces)
+            # FOCUS TC
             st.subheader("🔥 Focus : Efficience Talent Center")
-            
-            # Recherche flexible du nom
             mask_tc = df_agg['Source'].astype(str).str.upper().str.contains("TALENT CENTER")
             df_tc = df_agg[mask_tc]
             
@@ -171,7 +182,6 @@ with tab4:
                 vol_tc = df_tc['1. Appels Reçus'].sum()
                 val_tc = df_tc['2. Validés (Sél.)'].sum()
                 int_tc = df_tc['3. Intégrés (Délégués)'].sum()
-                
                 taux_transfo_tc = (int_tc / vol_tc * 100) if vol_tc > 0 else 0
                 
                 k1, k2, k3, k4 = st.columns(4)
@@ -179,53 +189,37 @@ with tab4:
                 k2.metric("Validés (TC)", int(val_tc))
                 k3.metric("Intégrés (TC)", int(int_tc))
                 k4.metric("Rendement Final (TC)", f"{taux_transfo_tc:.2f}%", delta_color="normal")
-            else:
-                st.warning("⚠️ Source 'TALENT CENTER' non trouvée. Vérifiez le nom exact dans le fichier Excel.")
             
             st.markdown("---")
 
-            # 3. TOP 5 AVEC COULEUR
+            # TOP 5 COLORÉ
             st.subheader("🏆 Top 5 des Meilleures Sources (Intégration)")
-            
-            # Tri
             df_top5 = df_agg.sort_values(by=['3. Intégrés (Délégués)', '1. Appels Reçus'], ascending=[False, False]).head(5)
             
-            # Création de la catégorie de couleur
             def categorize_source(source_name):
-                if "TALENT CENTER" in str(source_name).upper():
-                    return "Talent Center"
-                return "Autres Sources"
+                return "Talent Center" if "TALENT CENTER" in str(source_name).upper() else "Autres Sources"
 
             df_top5['Catégorie'] = df_top5['Source'].apply(categorize_source)
             
-            # Graphique coloré
             fig_best = px.bar(
                 df_top5,
                 x='Source',
                 y='3. Intégrés (Délégués)',
-                color='Catégorie', # La magie opère ici
+                color='Catégorie',
                 title="Nombre d'Intégrations par Source",
                 text='3. Intégrés (Délégués)',
-                # Dictionnaire de couleurs explicite
                 color_discrete_map={
-                    "Talent Center": "#FF4500", # Orange Rouge (Très visible)
-                    "Autres Sources": "#1f77b4" # Bleu standard
+                    "Talent Center": "#FF4500", # Orange
+                    "Autres Sources": "#1f77b4" # Bleu
                 }
             )
             fig_best.update_traces(textposition='outside')
-            # On cache la légende pour garder ça propre si tu veux, ou on laisse
-            fig_best.update_layout(showlegend=True) 
-            
             st.plotly_chart(fig_best, use_container_width=True)
             
             with st.expander("Voir le tableau complet"):
                 df_disp_src = df_agg.copy()
-                # Ajout colonne rendement
                 df_disp_src['Rendement (%)'] = (df_disp_src['3. Intégrés (Délégués)'] / df_disp_src['1. Appels Reçus'] * 100).fillna(0).map('{:.2f}%'.format)
                 st.dataframe(df_disp_src)
-
-    else:
-        st.info("En attente du fichier...")
 
 # --- 5. PLAN D'ACTION ---
 with tab5:
