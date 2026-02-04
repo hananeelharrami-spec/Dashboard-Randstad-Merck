@@ -8,44 +8,58 @@ import glob
 # Configuration de la page
 st.set_page_config(page_title="Dashboard Pilotage Randstad", layout="wide")
 
-# --- EN-TÊTE ---
-col_title, col_plan = st.columns([3, 1])
+# --- EN-TÊTE AVEC KPI MANUELS ---
+col_title, col_kpis = st.columns([2, 2])
 with col_title:
-    st.title("📊 Dashboard de Pilotage - Randstad / Merck")
+    st.title("📊 Dashboard de Pilotage")
+    st.caption("Randstad / Merck")
 
-with col_plan:
-    st.markdown("### 👥 Planning / Effectifs")
-    effectif = st.number_input("Intérimaires en poste", value=133, step=1)
+with col_kpis:
+    # Zone de saisie manuelle (côte à côte)
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("### 👥 Effectifs")
+        effectif = st.number_input("Intérimaires en poste", value=133, step=1)
+    with c2:
+        st.markdown("### ⭐ Satisfaction")
+        nps = st.number_input("NPS Intérimaire (/10)", value=9.1, step=0.1, format="%.1f")
 
-# --- FONCTION DE NETTOYAGE ULTIME ---
+# --- FONCTION DE NETTOYAGE ROBUSTE ---
 def clean_and_scale_data(df):
-    # 0. Nettoyage des Noms de Colonnes (enlève les espaces à la fin)
+    # 0. Nettoyage des Noms de Colonnes
     df.columns = df.columns.str.strip()
 
-    # 1. CONVERSION TEXTE -> NOMBRE
+    # 1. CONVERSION TEXTE -> NOMBRE (Sécurisée)
     for col in df.columns:
         if df[col].dtype == 'object':
             try:
-                series = df[col].astype(str).str.replace('"', '').str.strip()
-                series = series.str.replace('%', '').str.replace(' ', '').str.replace('\u202f', '')
-                series = series.str.replace(',', '.')
-                df[col] = pd.to_numeric(series, errors='ignore')
+                # On travaille sur une copie
+                series = df[col].astype(str).str.strip()
+                # Enlève les guillemets et espaces insécables
+                series = series.str.replace('"', '').str.replace('\u202f', '').str.replace('\xa0', '')
+                # Enlève % et remplace virgule
+                series = series.str.replace('%', '').str.replace(' ', '').str.replace(',', '.')
+                
+                # Tente la conversion, remplace les erreurs par NaN
+                df[col] = pd.to_numeric(series, errors='coerce')
             except Exception:
                 pass
 
-    # 2. SECURISATION DES ANNEES (Pour voir 2026)
+    # 2. SECURISATION DES ANNEES (Anti-Crash)
     if 'Année' in df.columns:
-        # On force en numérique, les erreurs deviennent NaN
+        # On force en numérique
         df['Année'] = pd.to_numeric(df['Année'], errors='coerce')
-        # On remplit les vides ou convertit en 0 pour éviter les plantages
-        df['Année'] = df['Année'].fillna(0).astype(int)
+        # On remplit les NaN par une année par défaut (ex: 2025) pour ne pas perdre la donnée
+        df['Année'] = df['Année'].fillna(2025).astype(int)
 
     # 3. MISE A L'ECHELLE DES POURCENTAGES
     for col in df.columns:
         col_lower = col.lower()
-        if any(x in col_lower for x in ['taux', '%', 'atteinte', 'validation', 'rendement', 'impact']):
+        keywords = ['taux', '%', 'atteinte', 'validation', 'rendement', 'impact']
+        if any(x in col_lower for x in keywords):
             if pd.api.types.is_numeric_dtype(df[col]):
                 max_val = df[col].max()
+                # Si max est petit (ex: 0.88), on x100
                 if pd.notna(max_val) and -1.5 <= max_val <= 1.5 and max_val != 0:
                     df[col] = df[col] * 100
     return df
@@ -59,28 +73,30 @@ def load_data():
 
     found_file = excel_files[0]
     data = {}
+    
+    expected = {
+        "YTD": "CONSOLIDATION_YTD",
+        "RECRUT": "Recrutement_Mensuel",
+        "ABS": "Absentéisme_Global_Mois",
+        "ABS_MOTIF": "Absentéisme_Par_Motif",
+        "ABS_SERVICE": "Absentéisme_Par_Service",
+        "SOURCE": "KPI_Sourcing_Rendement",
+        "PLAN": "Suivi_Plan_Action"
+    }
+    
     try:
         xls = pd.ExcelFile(found_file)
         all_sheets = xls.sheet_names
         
-        expected = {
-            "YTD": "CONSOLIDATION_YTD",
-            "RECRUT": "Recrutement_Mensuel",
-            "ABS": "Absentéisme_Global_Mois",
-            "ABS_MOTIF": "Absentéisme_Par_Motif",
-            "ABS_SERVICE": "Absentéisme_Par_Service",
-            "SOURCE": "KPI_Sourcing_Rendement",
-            "PLAN": "Suivi_Plan_Action"
-        }
-        
         for key, sheet_name in expected.items():
             if sheet_name in all_sheets:
+                # Lecture brute puis nettoyage
                 df_raw = pd.read_excel(found_file, sheet_name=sheet_name)
                 data[key] = clean_and_scale_data(df_raw)
         return data, found_file
         
     except Exception as e:
-        st.error(f"Erreur de lecture : {e}")
+        st.error(f"Erreur technique lors de la lecture : {e}")
         return None, found_file
 
 data, filename = load_data()
@@ -91,64 +107,23 @@ if data is None:
 else:
     st.markdown("---")
 
-# --- SIDEBAR : FILTRES GLOBAUX ---
+# --- BARRE LATÉRALE : FILTRES ---
 st.sidebar.header("Filtres")
 
-# Récupération des années disponibles dans les données
+# Récupération dynamique des années
 annees_dispo = set()
 for key, df in data.items():
     if 'Année' in df.columns:
-        annees_dispo.update(df['Année'].unique())
+        try:
+            unique_years = df['Année'].dropna().unique()
+            # On ne garde que ce qui ressemble à une année (ex: > 2020)
+            valid_years = [int(y) for y in unique_years if y > 2020]
+            annees_dispo.update(valid_years)
+        except:
+            pass
 
-# On enlève 0 si présent et on trie
-annees_dispo = sorted([a for a in annees_dispo if a > 2000])
+annees_dispo = sorted(list(annees_dispo))
+# Par défaut, on met l'année la plus récente si disponible, sinon Toutes
+index_default = len(annees_dispo) # Par défaut "Toutes" (qui sera à la fin de la liste d'options)
 
-# Sélecteur d'année
-annee_select = st.sidebar.radio("Choisir l'année :", ["Toutes"] + [str(a) for a in annees_dispo])
-
-# FONCTION FILTRE
-def filter_year(df):
-    if annee_select == "Toutes":
-        return df
-    if 'Année' in df.columns:
-        return df[df['Année'] == int(annee_select)]
-    return df
-
-# --- DASHBOARD ---
-
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["📈 Vue Globale", "🤝 Recrutement", "🏥 Absentéisme", "🔍 Sourcing", "✅ Plan d'Action"])
-
-# --- 1. VUE GLOBALE (YTD) ---
-with tab1:
-    st.header(f"Performance {annee_select}")
-    if "YTD" in data:
-        df_ytd = filter_year(data["YTD"]) # Filtre appliqué
-        
-        if not df_ytd.empty:
-            col_val = 'Valeur YTD'
-            cols = st.columns(4)
-            for index, row in df_ytd.iterrows():
-                indic = row['Indicateur']
-                val = row[col_val]
-                val_str = f"{val:.2f}%" if isinstance(val, (int, float)) else str(val)
-                cols[index % 4].metric(label=indic, value=val_str)
-        else:
-            st.warning(f"Pas de données consolidées pour {annee_select}")
-
-# --- 2. RECRUTEMENT ---
-with tab2:
-    st.header("Recrutement Mensuel")
-    if "RECRUT" in data:
-        df_rec = filter_year(data["RECRUT"]) # Filtre appliqué
-        
-        if not df_rec.empty:
-            if 'Mois' in df_rec.columns:
-                df_rec = df_rec.sort_values(['Année', 'Mois'])
-                # Axe X propre : Mois/Année
-                df_rec['Période'] = df_rec['Mois'].astype(str) + "/" + df_rec['Année'].astype(str)
-
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.subheader("Taux de Service & Transformation")
-                    fig = px.line(df_rec, x='Période', y=['Taux Service', 'Taux Transfo'], markers=True)
-                    fig.update_
+options_annee =
