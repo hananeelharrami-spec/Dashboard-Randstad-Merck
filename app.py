@@ -3,16 +3,12 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import os
-import glob # Permet de chercher des fichiers
+import glob
 
 # Configuration de la page
 st.set_page_config(page_title="Dashboard Pilotage Randstad", layout="wide")
 
 st.title("📊 Dashboard de Pilotage - Randstad / Merck")
-
-# --- OUTIL DE DIAGNOSTIC (S'affiche si problème) ---
-# Cela t'aidera à voir quels fichiers sont réellement sur le serveur
-files_present = os.listdir('.')
 
 # --- FONCTION DE NETTOYAGE RENFORCÉE ---
 def clean_and_scale_data(df):
@@ -40,15 +36,11 @@ def clean_and_scale_data(df):
 # --- CHARGEMENT INTELLIGENT ---
 @st.cache_data
 def load_data():
-    # 1. On cherche n'importe quel fichier .xlsx dans le dossier actuel
     excel_files = glob.glob("*.xlsx")
-    
     if not excel_files:
         return None, None
 
-    # On prend le premier trouvé (ex: "Dashboard Merck.xlsx")
     found_file = excel_files[0]
-    
     data = {}
     try:
         xls = pd.ExcelFile(found_file)
@@ -75,20 +67,17 @@ def load_data():
 # Exécution du chargement
 data, filename = load_data()
 
-# --- GESTION DES ERREURS ---
 if data is None:
     st.error("❌ Aucun fichier Excel (.xlsx) trouvé sur le serveur.")
-    st.warning(f"Fichiers présents dans le dossier : {files_present}")
-    st.info("Action : Assurez-vous d'avoir uploadé votre fichier Excel sur GitHub (à côté de app.py).")
+    st.info("Veuillez uploader votre fichier de données (ex: data.xlsx) sur GitHub.")
     st.stop()
 else:
-    # Petit message discret pour confirmer quel fichier est utilisé
     st.toast(f"Données chargées depuis : {filename}", icon="✅")
     st.markdown("---")
 
 # --- DASHBOARD ---
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["📈 Vue Globale", "🤝 Recrutement", "🏥 Absentéisme", "🔍 Sourcing", "✅ Plan d'Action"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📈 Vue Globale", "🤝 Recrutement", "🏥 Absentéisme", "🔍 Sourcing (Top 5 & TC)", "✅ Plan d'Action"])
 
 # --- 1. VUE GLOBALE (YTD) ---
 with tab1:
@@ -162,25 +151,102 @@ with tab3:
              df_show_abs['Taux Absentéisme'] = df_show_abs['Taux Absentéisme'].apply(lambda x: f"{x:.2f}%" if isinstance(x, (int,float)) else x)
         c1.dataframe(df_show_abs)
 
-# --- 4. SOURCING ---
+# --- 4. SOURCING (MODIFIÉ) ---
 with tab4:
-    st.header("Rendement Sourcing")
+    st.header("Performance Sourcing")
     if "SOURCE" in data:
         df_src = data["SOURCE"]
         if 'Source' in df_src.columns:
-            df_agg = df_src.groupby('Source', as_index=False)[['1. Appels Reçus', '3. Intégrés (Délégués)']].sum()
-            df_agg = df_agg.sort_values('1. Appels Reçus', ascending=False)
+            # 1. Aggrégation
+            df_agg = df_src.groupby('Source', as_index=False)[['1. Appels Reçus', '2. Validés (Sél.)', '3. Intégrés (Délégués)']].sum()
             
-            st.subheader("Volume vs Intégration par Source")
-            fig_src = px.bar(df_agg, x='Source', y=['1. Appels Reçus', '3. Intégrés (Délégués)'], barmode='group')
-            st.plotly_chart(fig_src, use_container_width=True)
+            # 2. FOCUS TALENT CENTER
+            st.subheader("🔥 Focus : Efficience Talent Center")
             
-            st.write("Détail Mensuel")
-            df_src_show = df_src.copy()
-            for col in df_src_show.columns:
-                if 'Taux' in col and pd.api.types.is_numeric_dtype(df_src_show[col]):
-                    df_src_show[col] = df_src_show[col].apply(lambda x: f"{x:.2f}%")
-            st.dataframe(df_src_show)
+            # Recherche de la ligne Talent Center
+            # On cherche n'importe quelle source contenant "TALENT CENTER"
+            mask_tc = df_agg['Source'].astype(str).str.contains("TALENT CENTER", case=False, na=False)
+            df_tc = df_agg[mask_tc]
+            
+            if not df_tc.empty:
+                # On somme au cas où il y ait plusieurs lignes Talent Center
+                vol_tc = df_tc['1. Appels Reçus'].sum()
+                val_tc = df_tc['2. Validés (Sél.)'].sum()
+                int_tc = df_tc['3. Intégrés (Délégués)'].sum()
+                
+                # Calculs Taux
+                taux_valid_tc = (val_tc / vol_tc * 100) if vol_tc > 0 else 0
+                taux_transfo_tc = (int_tc / vol_tc * 100) if vol_tc > 0 else 0
+                
+                k1, k2, k3, k4 = st.columns(4)
+                k1.metric("Volume Appels (TC)", int(vol_tc))
+                k2.metric("Validés (TC)", int(val_tc))
+                k3.metric("Intégrés (TC)", int(int_tc))
+                k4.metric("Rendement Final (TC)", f"{taux_transfo_tc:.2f}%", delta_color="normal")
+            else:
+                st.info("Source 'Talent Center' non détectée dans les données.")
+            
+            st.markdown("---")
+
+            # 3. TOP 5 SOURCES
+            st.subheader("🏆 Top 5 des Meilleures Sources")
+            
+            # Tri par Intégrés (Qualité) puis Volume (Quantité)
+            df_top5 = df_agg.sort_values(by=['3. Intégrés (Délégués)', '1. Appels Reçus'], ascending=[False, False]).head(5)
+            
+            # Ajout d'une colonne couleur pour surbrillance
+            def get_color(source_name):
+                if "TALENT CENTER" in str(source_name).upper():
+                    return "Talent Center" # Sera mappé à une couleur vive
+                return "Autres Sources"
+
+            df_top5['Type'] = df_top5['Source'].apply(get_color)
+            
+            # Graphique avec couleur conditionnelle
+            fig_src = px.bar(
+                df_top5, 
+                x='Source', 
+                y=['1. Appels Reçus', '3. Intégrés (Délégués)'], 
+                barmode='group',
+                title="Volume vs Intégration (Top 5)",
+                color='Type', # Utilise la colonne Type pour la couleur
+                # Dictionnaire de couleurs : Talent Center en Orange Vif, Autres en Gris/Bleu
+                color_discrete_map={
+                    "Talent Center": "#FF8C00",   # Orange
+                    "Autres Sources": "#636EFA",  # Bleu par défaut Plotly
+                    "1. Appels Reçus": "#B0C4DE", # Gris clair (si groupé par variable)
+                    "3. Intégrés (Délégués)": "#4682B4" # Bleu acier
+                }
+            )
+            # Petit hack pour que Plotly comprenne bien les couleurs quand on a deux barres par source
+            # On refait plus simple : Couleur par variable, mais on note TC dans le titre ou annotations si besoin
+            # Le plus simple pour garder la lisibilité "Bar Group" est de ne pas colorer par source mais par métrique
+            # MAIS on va utiliser une astuce : trier pour que TC soit visible.
+            
+            # Alternative visuelle plus propre : Bar chart simple des Intégrés avec couleur
+            fig_best = px.bar(
+                df_top5,
+                x='Source',
+                y='3. Intégrés (Délégués)',
+                color='Type',
+                title="Top 5 Sources par Nombre d'Intégrations",
+                text='3. Intégrés (Délégués)',
+                color_discrete_map={
+                    "Talent Center": "#FF4500", # Orange Rouge
+                    "Autres Sources": "#1f77b4" # Bleu
+                }
+            )
+            fig_best.update_traces(textposition='outside')
+            st.plotly_chart(fig_best, use_container_width=True)
+            
+            with st.expander("Voir le détail complet des sources"):
+                # Formatage tableau
+                df_disp_src = df_agg.copy()
+                df_disp_src['Rendement (%)'] = (df_disp_src['3. Intégrés (Délégués)'] / df_disp_src['1. Appels Reçus'] * 100).fillna(0).map('{:.2f}%'.format)
+                st.dataframe(df_disp_src)
+
+    else:
+        st.info("En attente du fichier...")
 
 # --- 5. PLAN D'ACTION ---
 with tab5:
