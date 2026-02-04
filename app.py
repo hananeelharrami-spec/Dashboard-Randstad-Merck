@@ -72,12 +72,12 @@ if data is None:
     st.info("Veuillez uploader votre fichier de données (ex: data.xlsx) sur GitHub.")
     st.stop()
 else:
-    st.toast(f"Données chargées depuis : {filename}", icon="✅")
+    # st.toast(f"Données chargées depuis : {filename}", icon="✅") # Optionnel
     st.markdown("---")
 
 # --- DASHBOARD ---
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["📈 Vue Globale", "🤝 Recrutement", "🏥 Absentéisme", "🔍 Sourcing (Top 5 & TC)", "✅ Plan d'Action"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📈 Vue Globale", "🤝 Recrutement", "🏥 Absentéisme", "🔍 Sourcing (Focus TC)", "✅ Plan d'Action"])
 
 # --- 1. VUE GLOBALE (YTD) ---
 with tab1:
@@ -151,7 +151,7 @@ with tab3:
              df_show_abs['Taux Absentéisme'] = df_show_abs['Taux Absentéisme'].apply(lambda x: f"{x:.2f}%" if isinstance(x, (int,float)) else x)
         c1.dataframe(df_show_abs)
 
-# --- 4. SOURCING (MODIFIÉ) ---
+# --- 4. SOURCING (SURBRILLANCE) ---
 with tab4:
     st.header("Performance Sourcing")
     if "SOURCE" in data:
@@ -160,22 +160,18 @@ with tab4:
             # 1. Aggrégation
             df_agg = df_src.groupby('Source', as_index=False)[['1. Appels Reçus', '2. Validés (Sél.)', '3. Intégrés (Délégués)']].sum()
             
-            # 2. FOCUS TALENT CENTER
+            # 2. FOCUS TALENT CENTER (Logique insensible à la casse et aux espaces)
             st.subheader("🔥 Focus : Efficience Talent Center")
             
-            # Recherche de la ligne Talent Center
-            # On cherche n'importe quelle source contenant "TALENT CENTER"
-            mask_tc = df_agg['Source'].astype(str).str.contains("TALENT CENTER", case=False, na=False)
+            # Recherche flexible du nom
+            mask_tc = df_agg['Source'].astype(str).str.upper().str.contains("TALENT CENTER")
             df_tc = df_agg[mask_tc]
             
             if not df_tc.empty:
-                # On somme au cas où il y ait plusieurs lignes Talent Center
                 vol_tc = df_tc['1. Appels Reçus'].sum()
                 val_tc = df_tc['2. Validés (Sél.)'].sum()
                 int_tc = df_tc['3. Intégrés (Délégués)'].sum()
                 
-                # Calculs Taux
-                taux_valid_tc = (val_tc / vol_tc * 100) if vol_tc > 0 else 0
                 taux_transfo_tc = (int_tc / vol_tc * 100) if vol_tc > 0 else 0
                 
                 k1, k2, k3, k4 = st.columns(4)
@@ -184,64 +180,47 @@ with tab4:
                 k3.metric("Intégrés (TC)", int(int_tc))
                 k4.metric("Rendement Final (TC)", f"{taux_transfo_tc:.2f}%", delta_color="normal")
             else:
-                st.info("Source 'Talent Center' non détectée dans les données.")
+                st.warning("⚠️ Source 'TALENT CENTER' non trouvée. Vérifiez le nom exact dans le fichier Excel.")
             
             st.markdown("---")
 
-            # 3. TOP 5 SOURCES
-            st.subheader("🏆 Top 5 des Meilleures Sources")
+            # 3. TOP 5 AVEC COULEUR
+            st.subheader("🏆 Top 5 des Meilleures Sources (Intégration)")
             
-            # Tri par Intégrés (Qualité) puis Volume (Quantité)
+            # Tri
             df_top5 = df_agg.sort_values(by=['3. Intégrés (Délégués)', '1. Appels Reçus'], ascending=[False, False]).head(5)
             
-            # Ajout d'une colonne couleur pour surbrillance
-            def get_color(source_name):
+            # Création de la catégorie de couleur
+            def categorize_source(source_name):
                 if "TALENT CENTER" in str(source_name).upper():
-                    return "Talent Center" # Sera mappé à une couleur vive
+                    return "Talent Center"
                 return "Autres Sources"
 
-            df_top5['Type'] = df_top5['Source'].apply(get_color)
+            df_top5['Catégorie'] = df_top5['Source'].apply(categorize_source)
             
-            # Graphique avec couleur conditionnelle
-            fig_src = px.bar(
-                df_top5, 
-                x='Source', 
-                y=['1. Appels Reçus', '3. Intégrés (Délégués)'], 
-                barmode='group',
-                title="Volume vs Intégration (Top 5)",
-                color='Type', # Utilise la colonne Type pour la couleur
-                # Dictionnaire de couleurs : Talent Center en Orange Vif, Autres en Gris/Bleu
-                color_discrete_map={
-                    "Talent Center": "#FF8C00",   # Orange
-                    "Autres Sources": "#636EFA",  # Bleu par défaut Plotly
-                    "1. Appels Reçus": "#B0C4DE", # Gris clair (si groupé par variable)
-                    "3. Intégrés (Délégués)": "#4682B4" # Bleu acier
-                }
-            )
-            # Petit hack pour que Plotly comprenne bien les couleurs quand on a deux barres par source
-            # On refait plus simple : Couleur par variable, mais on note TC dans le titre ou annotations si besoin
-            # Le plus simple pour garder la lisibilité "Bar Group" est de ne pas colorer par source mais par métrique
-            # MAIS on va utiliser une astuce : trier pour que TC soit visible.
-            
-            # Alternative visuelle plus propre : Bar chart simple des Intégrés avec couleur
+            # Graphique coloré
             fig_best = px.bar(
                 df_top5,
                 x='Source',
                 y='3. Intégrés (Délégués)',
-                color='Type',
-                title="Top 5 Sources par Nombre d'Intégrations",
+                color='Catégorie', # La magie opère ici
+                title="Nombre d'Intégrations par Source",
                 text='3. Intégrés (Délégués)',
+                # Dictionnaire de couleurs explicite
                 color_discrete_map={
-                    "Talent Center": "#FF4500", # Orange Rouge
-                    "Autres Sources": "#1f77b4" # Bleu
+                    "Talent Center": "#FF4500", # Orange Rouge (Très visible)
+                    "Autres Sources": "#1f77b4" # Bleu standard
                 }
             )
             fig_best.update_traces(textposition='outside')
+            # On cache la légende pour garder ça propre si tu veux, ou on laisse
+            fig_best.update_layout(showlegend=True) 
+            
             st.plotly_chart(fig_best, use_container_width=True)
             
-            with st.expander("Voir le détail complet des sources"):
-                # Formatage tableau
+            with st.expander("Voir le tableau complet"):
                 df_disp_src = df_agg.copy()
+                # Ajout colonne rendement
                 df_disp_src['Rendement (%)'] = (df_disp_src['3. Intégrés (Délégués)'] / df_disp_src['1. Appels Reçus'] * 100).fillna(0).map('{:.2f}%'.format)
                 st.dataframe(df_disp_src)
 
