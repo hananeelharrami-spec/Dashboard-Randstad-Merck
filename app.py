@@ -15,7 +15,6 @@ with col_title:
     st.caption("Randstad / Merck")
 
 with col_kpis:
-    # Zone de saisie manuelle (côte à côte)
     c1, c2 = st.columns(2)
     with c1:
         st.markdown("### 👥 Effectifs")
@@ -24,87 +23,93 @@ with col_kpis:
         st.markdown("### ⭐ Satisfaction")
         nps = st.number_input("NPS Intérimaire (/10)", value=9.1, step=0.1, format="%.1f")
 
-# --- FONCTION DE NETTOYAGE ROBUSTE ---
+# --- FONCTION DE NETTOYAGE ---
 def clean_and_scale_data(df):
-    # 0. Nettoyage des Noms de Colonnes
-    df.columns = df.columns.str.strip()
+    df.columns = df.columns.str.strip() # Nettoyage titres colonnes
 
-    # 1. CONVERSION TEXTE -> NOMBRE (Sécurisée)
+    # 1. Nettoyage Valeurs
     for col in df.columns:
         if df[col].dtype == 'object':
             try:
-                # On travaille sur une copie
                 series = df[col].astype(str).str.strip()
-                # Enlève les guillemets et espaces insécables
                 series = series.str.replace('"', '').str.replace('\u202f', '').str.replace('\xa0', '')
-                # Enlève % et remplace virgule
                 series = series.str.replace('%', '').str.replace(' ', '').str.replace(',', '.')
-                
-                # Tente la conversion, remplace les erreurs par NaN
                 df[col] = pd.to_numeric(series, errors='coerce')
-            except Exception:
+            except:
                 pass
 
-    # 2. SECURISATION DES ANNEES (Anti-Crash)
+    # 2. Sécurisation Année (Important pour 2026)
     if 'Année' in df.columns:
-        # On force en numérique
-        df['Année'] = pd.to_numeric(df['Année'], errors='coerce')
-        # On remplit les NaN par une année par défaut (ex: 2025) pour ne pas perdre la donnée
-        df['Année'] = df['Année'].fillna(2025).astype(int)
+        df['Année'] = pd.to_numeric(df['Année'], errors='coerce').fillna(2025).astype(int)
 
-    # 3. MISE A L'ECHELLE DES POURCENTAGES
+    # 3. Mise à l'échelle %
     for col in df.columns:
         col_lower = col.lower()
         keywords = ['taux', '%', 'atteinte', 'validation', 'rendement', 'impact']
         if any(x in col_lower for x in keywords):
             if pd.api.types.is_numeric_dtype(df[col]):
                 max_val = df[col].max()
-                # Si max est petit (ex: 0.88), on x100
                 if pd.notna(max_val) and -1.5 <= max_val <= 1.5 and max_val != 0:
                     df[col] = df[col] * 100
     return df
 
-# --- CHARGEMENT ---
+# --- CHARGEMENT INTELLIGENT (CSV ou EXCEL) ---
 @st.cache_data
 def load_data():
-    excel_files = glob.glob("*.xlsx")
-    if not excel_files:
-        return None, None
-
-    found_file = excel_files[0]
     data = {}
+    source_type = ""
     
-    expected = {
-        "YTD": "CONSOLIDATION_YTD",
-        "RECRUT": "Recrutement_Mensuel",
-        "ABS": "Absentéisme_Global_Mois",
-        "ABS_MOTIF": "Absentéisme_Par_Motif",
-        "ABS_SERVICE": "Absentéisme_Par_Service",
-        "SOURCE": "KPI_Sourcing_Rendement",
-        "PLAN": "Suivi_Plan_Action"
-    }
-    
-    try:
-        xls = pd.ExcelFile(found_file)
-        all_sheets = xls.sheet_names
-        
-        for key, sheet_name in expected.items():
-            if sheet_name in all_sheets:
-                # Lecture brute puis nettoyage
-                df_raw = pd.read_excel(found_file, sheet_name=sheet_name)
-                data[key] = clean_and_scale_data(df_raw)
-        return data, found_file
-        
-    except Exception as e:
-        st.error(f"Erreur technique lors de la lecture : {e}")
-        return None, found_file
+    # 1. Essai EXCEL (.xlsx)
+    excel_files = glob.glob("*.xlsx")
+    if excel_files:
+        found_file = excel_files[0]
+        source_type = f"Excel ({found_file})"
+        try:
+            xls = pd.ExcelFile(found_file)
+            mapping = {
+                "YTD": "CONSOLIDATION_YTD", "RECRUT": "Recrutement_Mensuel",
+                "ABS": "Absentéisme_Global_Mois", "ABS_MOTIF": "Absentéisme_Par_Motif",
+                "ABS_SERVICE": "Absentéisme_Par_Service", "SOURCE": "KPI_Sourcing_Rendement",
+                "PLAN": "Suivi_Plan_Action"
+            }
+            for key, sheet in mapping.items():
+                if sheet in xls.sheet_names:
+                    data[key] = clean_and_scale_data(pd.read_excel(xls, sheet_name=sheet))
+        except Exception as e:
+            st.error(f"Erreur Excel: {e}")
 
-data, filename = load_data()
+    # 2. Essai CSV (Si pas d'Excel ou incomplet)
+    if not data:
+        csv_files = glob.glob("*.csv")
+        if csv_files:
+            source_type = "Fichiers CSV multiples"
+            # On cherche des mots clés dans les noms de fichiers
+            for f in csv_files:
+                try:
+                    # Lecture robuste des CSV (séparateur , ou ;)
+                    df_temp = pd.read_csv(f, sep=None, engine='python') 
+                    df_clean = clean_and_scale_data(df_temp)
+                    
+                    if "CONSOLIDATION_YTD" in f: data["YTD"] = df_clean
+                    elif "Recrutement_Mensuel" in f: data["RECRUT"] = df_clean
+                    elif "Absentéisme_Global" in f: data["ABS"] = df_clean
+                    elif "Absentéisme_Par_Motif" in f: data["ABS_MOTIF"] = df_clean
+                    elif "Absentéisme_Par_Service" in f: data["ABS_SERVICE"] = df_clean
+                    elif "Sourcing" in f: data["SOURCE"] = df_clean
+                    elif "Plan_Action" in f: data["PLAN"] = df_clean
+                except:
+                    pass
 
-if data is None:
-    st.error("❌ Aucun fichier Excel trouvé. Uploadez data.xlsx sur GitHub.")
+    return data, source_type
+
+data, source_msg = load_data()
+
+if not data:
+    st.error("❌ Aucun fichier de données trouvé (ni .xlsx, ni .csv corrects).")
     st.stop()
 else:
+    # Petit message de succès discret
+    # st.success(f"Chargé depuis : {source_msg}")
     st.markdown("---")
 
 # --- BARRE LATÉRALE : FILTRES ---
@@ -114,26 +119,20 @@ st.sidebar.header("Filtres")
 annees_dispo = set()
 for key, df in data.items():
     if 'Année' in df.columns:
-        try:
-            unique_years = df['Année'].dropna().unique()
-            # On ne garde que ce qui ressemble à une année (ex: > 2020)
-            valid_years = [int(y) for y in unique_years if y > 2020]
-            annees_dispo.update(valid_years)
-        except:
-            pass
+        valid_years = [int(y) for y in df['Année'].dropna().unique() if y > 2020]
+        annees_dispo.update(valid_years)
 
 annees_dispo = sorted(list(annees_dispo))
-# Par défaut, on met l'année la plus récente si disponible, sinon Toutes
-index_default = len(annees_dispo) # Par défaut "Toutes" (qui sera à la fin de la liste d'options)
-
+# Par défaut 2026 si dispo, sinon le dernier
+default_idx = len(annees_dispo) - 1 if annees_dispo else 0
 options_annee = [str(a) for a in annees_dispo] + ["Toutes"]
-annee_select = st.sidebar.selectbox("Choisir l'année :", options_annee, index=len(options_annee)-1)
+
+# On force la sélection sur l'année la plus récente par défaut pour voir les nouvelles datas
+annee_select = st.sidebar.selectbox("Choisir l'année :", options_annee, index=max(0, len(annees_dispo)-1))
 
 def filter_year(df):
-    if annee_select == "Toutes":
-        return df
-    if 'Année' in df.columns:
-        return df[df['Année'] == int(annee_select)]
+    if annee_select == "Toutes": return df
+    if 'Année' in df.columns: return df[df['Année'] == int(annee_select)]
     return df
 
 # --- DASHBOARD ---
@@ -144,7 +143,7 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs(["📈 Vue Globale", "🤝 Recrutement", 
 with tab1:
     st.subheader(f"Performance Consolidée ({annee_select})")
     
-    # Affichage des KPIs manuels en gros ici aussi
+    # Affichage des KPIs manuels
     k1, k2 = st.columns(2)
     k1.metric("Effectifs Semaine", f"{effectif}", delta="Intérimaires")
     k2.metric("NPS Intérimaire", f"{nps}/10", delta="Satisfaction")
@@ -152,13 +151,14 @@ with tab1:
 
     if "YTD" in data:
         df_ytd = filter_year(data["YTD"])
+        # On consolide si plusieurs lignes pour la même année (cas des CSV parfois)
         if not df_ytd.empty and 'Valeur YTD' in df_ytd.columns:
             cols = st.columns(4)
-            for index, row in df_ytd.iterrows():
+            for i, (index, row) in enumerate(df_ytd.iterrows()):
                 indic = row['Indicateur']
                 val = row['Valeur YTD']
                 val_str = f"{val:.2f}%" if isinstance(val, (int, float)) else str(val)
-                cols[index % 4].metric(label=indic, value=val_str)
+                cols[i % 4].metric(label=indic, value=val_str)
         else:
             st.info(f"Pas de données YTD pour {annee_select}")
 
@@ -224,13 +224,13 @@ with tab3:
                          fig_s.update_layout(yaxis_ticksuffix="%")
                          st.plotly_chart(fig_s, use_container_width=True)
 
-# --- 4. SOURCING ---
+# --- 4. SOURCING (CORRECTIF TALENT CENTER) ---
 with tab4:
     st.header("Sourcing")
     if "SOURCE" in data:
         df_src = filter_year(data["SOURCE"])
         if not df_src.empty and 'Source' in df_src.columns:
-            # Nettoyage colonne Source
+            # Nettoyage
             df_src['Source_Clean'] = df_src['Source'].astype(str).str.upper().str.strip()
             
             # Aggrégation
@@ -238,11 +238,11 @@ with tab4:
             
             # FOCUS TC (Recherche large)
             st.subheader("🔥 Focus : Talent Center")
+            # On cherche "TALENT" dans le nom (ça marchera pour "PARTENAIRE : TALENT CENTER...")
             mask_tc = df_agg['Source_Clean'].str.contains("TALENT")
             df_tc = df_agg[mask_tc]
             
             if not df_tc.empty:
-                # Somme au cas où plusieurs lignes matchent
                 vol_tc = df_tc['1. Appels Reçus'].sum()
                 val_tc = df_tc['2. Validés (Sél.)'].sum()
                 int_tc = df_tc['3. Intégrés (Délégués)'].sum()
@@ -254,7 +254,7 @@ with tab4:
                 k3.metric("Intégrés", int(int_tc))
                 k4.metric("Rendement", f"{taux_tc:.2f}%")
             else:
-                st.info("Source 'Talent Center' non détectée sur cette période.")
+                st.info("Pas de données Talent Center pour cette période.")
 
             st.markdown("---")
             
@@ -284,7 +284,6 @@ with tab5:
     st.header("Plan d'Action")
     if "PLAN" in data:
         df_plan = data["PLAN"]
-        # Pas de filtre année ici car le plan est souvent transverse
         
         row_global = df_plan[df_plan['Catégorie / Section'].astype(str).str.contains('GLOBAL', case=False, na=False)]
         if not row_global.empty:
